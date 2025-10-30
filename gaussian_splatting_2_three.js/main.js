@@ -660,36 +660,30 @@ class PlyLoader {
         this.splatBuffer = null;
     }
 
-    fetchFile(fileName) {
-        return new Promise((resolve, reject) => {
-            fetch(fileName)
-                .then((res) => {
-                    return res.arrayBuffer();
-                })
-                .then((data) => {
-                    resolve(data);
-                })
-                .catch((err) => {
-                    reject(err);
-                });
-        });
+    async fetchFile(fileName) {
+        try {
+            const res = await fetch(fileName);
+            if (!res.ok) {
+                throw new Error(`Failed to fetch ${fileName}: ${res.status} ${res.statusText}`);
+            }
+            return await res.arrayBuffer();
+        } catch (err) {
+            throw Object.assign(new Error(`fetchFile failed for ${fileName}`), { cause: err });
+        }
     }
 
-    loadFromFile(fileName) {
-        return new Promise((resolve, reject) => {
-            const loadPromise = this.fetchFile(fileName);
-            loadPromise
-                .then((plyFileData) => {
-                    const plyParser = new PlyParser(plyFileData);
-                    const splatBuffer = plyParser.parseToSplatBuffer();
-                    this.splatBuffer = splatBuffer;
-                    resolve(splatBuffer);
-                })
-                .catch((err) => {
-                    reject(err);
-                });
-        });
+    async loadFromFile(fileName) {
+        try {
+            const plyFileData = await this.fetchFile(fileName);
+            const plyParser = new PlyParser(plyFileData);
+            const splatBuffer = plyParser.parseToSplatBuffer();
+            this.splatBuffer = splatBuffer;
+            return splatBuffer;
+        } catch (err) {
+            throw Object.assign(new Error(`loadFromFile failed for ${fileName}`), { cause: err });
+        }
     }
+
 
 }
 
@@ -699,22 +693,23 @@ class SplatLoader {
         this.splatBuffer = splatBuffer;
         this.downLoadLink = null;
     }
+    async loadFromFile(fileName) {
+        try {
+            const res = await fetch(fileName);
+            if (!res.ok) {
+                throw new Error(`Failed to fetch ${fileName}: ${res.status} ${res.statusText}`);
+            }
 
-    loadFromFile(fileName) {
-        return new Promise((resolve, reject) => {
-            fetch(fileName)
-                .then((res) => {
-                    return res.arrayBuffer();
-                })
-                .then((bufferData) => {
-                    const splatBuffer = new SplatBuffer(bufferData);
-                    splatBuffer.buildPreComputedBuffers();
-                    resolve(splatBuffer);
-                })
-                .catch((err) => {
-                    reject(err);
-                });
-        });
+            const bufferData = await res.arrayBuffer();
+
+            const splatBuffer = new SplatBuffer(bufferData);
+            // If buildPreComputedBuffers is optional, the ?. keeps this safe
+            splatBuffer.buildPreComputedBuffers?.();
+
+            return splatBuffer;
+        } catch (err) {
+            throw Object.assign(new Error(`loadFromFile failed for ${fileName}`), { cause: err });
+        }
     }
 
     setFromBuffer(splatBuffer) {
@@ -911,28 +906,26 @@ class Viewer {
     }
 
 
-    loadFile(fileName) {
+    async loadFile(fileName) {
         const loadingSpinner = new LoadingSpinner();
         loadingSpinner.show();
-        const loadPromise = new Promise((resolve, reject) => {
-            let fileLoadPromise;
-            if (fileName.endsWith('.splat')) {
-                fileLoadPromise = new SplatLoader().loadFromFile(fileName);
-            } else if (fileName.endsWith('.ply')) {
-                fileLoadPromise = new PlyLoader().loadFromFile(fileName);
-            } else {
-                reject(new Error(`Viewer::loadFile -> File format not supported: ${fileName}`));
-            }
-            fileLoadPromise
-                .then((splatBuffer) => {
-                    resolve(splatBuffer);
-                })
-                .catch((e) => {
-                    reject(new Error(`Viewer::loadFile -> Could not load file ${fileName}`));
-                });
-        });
 
-        return loadPromise.then((splatBuffer) => {
+        try {
+            const lower = String(fileName).toLowerCase();
+            let loader;
+
+            if (lower.endsWith('.splat')) {
+                loader = new SplatLoader();
+            } else if (lower.endsWith('.ply')) {
+                loader = new PlyLoader();
+            } else {
+                throw new Error(`Viewer::loadFile -> File format not supported: ${fileName}`);
+            }
+
+            // Await the file load
+            const splatBuffer = await loader.loadFromFile(fileName);
+
+            // Keep original side effects
             this.splatBuffer = splatBuffer;
             this.scene.add(this.splatBuffer);
 
@@ -943,11 +936,19 @@ class Viewer {
             this.splatBuffer.updateUniforms(this.realProjectionMatrix, focal, renderDimensions);
 
             // Initialize the worker
-            this.splatBuffer.initWorker();
+            this.splatBuffer.initWorker?.(); // call if present
 
+            // No return value originally; async function will resolve when done
+        } catch (err) {
+            // Match original messaging but keep the cause if available
+            const message = `Viewer::loadFile -> Could not load file ${fileName}`;
+            // Re-throw with a clearer message; some runtimes support 'cause'
+            throw Object.assign(new Error(message), { cause: err });
+        } finally {
             loadingSpinner.hide();
-        });
+        }
     }
+
 
     addDebugMeshesToScene() {
         const sphereGeometry = new THREE.SphereGeometry(1, 32, 32);
